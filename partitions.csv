@@ -1,0 +1,8 @@
+# Name,   Type, SubType, Offset,   Size,   Flags
+# Partition table is at 0x9000 (CONFIG_PARTITION_TABLE_OFFSET=0x9000)
+# 7 MB factory partition required: existing firmware (~1-2 MB) +
+# hand_detect model (~1.7 MB) + gesture_cls model (~0.7 MB) as flash rodata
+nvs,      data, nvs,     0xA000,   20K,
+phy_init, data, phy,     0xF000,   4K,
+factory,  app,  factory, 0x10000,  7000K,
+storage,  data, fat,     ,         1M,

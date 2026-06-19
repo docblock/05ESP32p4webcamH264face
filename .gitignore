@@ -1,0 +1,53 @@
+# =============================================================================
+# ESP-IDF Build-Artefakte
+# =============================================================================
+
+# Build-Verzeichnis (groß, vollständig generiert)
+build/
+
+# sdkconfig enthält u.a. WLAN-SSID und Passwort im Klartext!
+sdkconfig
+sdkconfig.old
+
+# Automatisch verwaltete Komponenten (werden per idf.py install wiederhergestellt)
+managed_components/
+dependencies.lock
+
+# =============================================================================
+# IDE / Editor
+# =============================================================================
+
+# VS Code (persönliche Einstellungen, falls nicht geteilt werden sollen)
+# .vscode/
+
+# CLion
+.idea/
+cmake-build-*/
+
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Virtuelle Umgebungen
+.venv/
+venv/
+env/
+
+# =============================================================================
+# Betriebssystem
+# =============================================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Logs & temporäre Dateien
+# =============================================================================
+*.log
+*.tmp
+*.bak
+*.orig
