@@ -181,8 +181,11 @@ static void frame_processing_task(void *arg)
             continue;
         }
 
-        // Sync cache to main memory after PPA output before feeding it to H264 encoder
-        esp_cache_msync(ppa_output_buffer, FINAL_BUFFER_SIZE_ALIGNED, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        // Sync cache before feeding to H264 encoder.
+        // PPA (hardware) wrote to ppa_output_buffer, and H264 (hardware) will read from it.
+        // To prevent any dirty CPU cache lines (e.g. from calloc at startup) from ever
+        // writing back and overwriting memory, we invalidate the CPU cache for this buffer.
+        esp_cache_msync(ppa_output_buffer, FINAL_BUFFER_SIZE_ALIGNED, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
 
         // Reset in_frame and out_frame properties for every iteration
         in_frame.raw_data.buffer = ppa_output_buffer;
@@ -200,6 +203,13 @@ static void frame_processing_task(void *arg)
         //         (unsigned long)frame_count, ret, (int)out_frame.length);
 
         if (ret == ESP_H264_ERR_OK) {
+            // Invalidate CPU cache for H264 output buffer before CPU reads it (memcpy in video_server_push_frame).
+            // Align the length to 64-byte boundary to satisfy cache sync requirements.
+            uint32_t aligned_len = (out_frame.length + 63) & ~63;
+            if (aligned_len > s_h264_buf_size) {
+                aligned_len = s_h264_buf_size;
+            }
+            esp_cache_msync(out_frame.raw_data.buffer, aligned_len, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
             video_server_push_frame(out_frame.raw_data.buffer, out_frame.length);
         } else {
             ESP_LOGE(TAG, "H264 encode failed on frame #%lu: %d", (unsigned long)frame_count, ret);
@@ -273,7 +283,7 @@ esp_err_t image_processor_init(QueueHandle_t frame_queue, QueueHandle_t buffer_p
     h264_cfg.fps = 25; // Frame rate
     h264_cfg.res.width = FINAL_WIDTH;
     h264_cfg.res.height = FINAL_HEIGHT;
-    h264_cfg.rc.bitrate = 1500000; // 1.5 Mbps target bitrate for crisp quality under motion
+    h264_cfg.rc.bitrate = 600000; // 600 kbps target bitrate is optimal for 224x224 and prevents network congestion
     h264_cfg.rc.qp_min = 10;
     h264_cfg.rc.qp_max = 30; // Quantization cap to prevent severe compression blurring
     h264_cfg.pic_type = ESP_H264_RAW_FMT_O_UYY_E_VYY;

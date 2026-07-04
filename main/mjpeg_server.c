@@ -32,16 +32,16 @@ typedef struct {
 static sse_client_t      s_sse_clients[SSE_MAX_CLIENTS];
 static SemaphoreHandle_t s_sse_mutex = NULL;
 
+#include "freertos/ringbuf.h"
+
 typedef struct {
-    SemaphoreHandle_t frame_ready;
+    RingbufHandle_t rb;
     bool active;
 } stream_client_t;
 
 // ---------------------------------------------------------------------------
 // Private state
 // ---------------------------------------------------------------------------
-static uint8_t          *s_shared_buf   = NULL;
-static size_t            s_shared_size  = 0;
 static size_t            s_buf_capacity = 0;
 static SemaphoreHandle_t s_buf_mutex    = NULL;
 static httpd_handle_t    s_server       = NULL;
@@ -611,12 +611,12 @@ static const char STREAM_PAGE_HTML[] =
     "                if (player.buffered && player.buffered.length > 0) {"
     "                  var bufferEnd = player.buffered.end(player.buffered.length - 1);"
     "                  var delay = bufferEnd - player.currentTime;"
-    "                  if (delay > 1.2) {"
+    "                  if (delay > 0.5) {"
     "                    player.currentTime = bufferEnd - 0.1;"
     "                    if (player.playbackRate !== 1.0) player.playbackRate = 1.0;"
-    "                  } else if (delay > 0.2) {"
+    "                  } else if (delay > 0.12) {"
     "                    if (player.playbackRate !== 1.2) player.playbackRate = 1.2;"
-    "                  } else if (delay < 0.1) {"
+    "                  } else if (delay < 0.08) {"
     "                    if (player.playbackRate !== 1.0) player.playbackRate = 1.0;"
     "                  }"
     "                }"
@@ -1022,47 +1022,35 @@ static void async_stream_task(void *arg)
     ESP_LOGI(TAG, "async_stream_task: started for client_idx=%d", client_idx);
     esp_err_t res = ESP_OK;
 
-    uint8_t *local_buf = (uint8_t *)heap_caps_malloc(s_buf_capacity, MALLOC_CAP_SPIRAM);
-    if (!local_buf) {
-        httpd_resp_send_500(req);
-        httpd_req_async_handler_complete(req);
-        free(resp_arg);
-        vTaskDelete(NULL);
-        return;
-    }
+    RingbufHandle_t rb = s_clients[client_idx].rb;
 
     while (res == ESP_OK) {
-        // Wait for frame ready signal (Timeout 5 seconds)
-        if (xSemaphoreTake(s_clients[client_idx].frame_ready, pdMS_TO_TICKS(5000)) != pdTRUE) {
-            continue;
-        }
-
-        size_t local_size = 0;
-        if (xSemaphoreTake(s_buf_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
-            memcpy(local_buf, s_shared_buf, s_shared_size);
-            local_size = s_shared_size;
-            xSemaphoreGive(s_buf_mutex);
-        }
-        if (local_size == 0) {
-            continue;
+        size_t item_size = 0;
+        // Wait for frame from ring buffer (Timeout 5 seconds)
+        uint8_t *item = (uint8_t *)xRingbufferReceive(rb, &item_size, pdMS_TO_TICKS(5000));
+        if (!item) {
+            ESP_LOGW(TAG, "async_stream_task: timeout waiting for frame");
+            break;
         }
 
         // Send raw H264 chunk
-        res = httpd_resp_send_chunk(req, (const char *)local_buf, (ssize_t)local_size);
+        res = httpd_resp_send_chunk(req, (const char *)item, (ssize_t)item_size);
+
+        // Return the item back to the ring buffer
+        vRingbufferReturnItem(rb, (void *)item);
     }
 
     // Unregister client
     if (xSemaphoreTake(s_buf_mutex, portMAX_DELAY) == pdTRUE) {
         s_clients[client_idx].active = false;
-        if (s_clients[client_idx].frame_ready) {
-            vSemaphoreDelete(s_clients[client_idx].frame_ready);
-            s_clients[client_idx].frame_ready = NULL;
+        if (s_clients[client_idx].rb) {
+            vRingbufferDelete(s_clients[client_idx].rb);
+            s_clients[client_idx].rb = NULL;
         }
         xSemaphoreGive(s_buf_mutex);
     }
 
     ESP_LOGI(TAG, "async_stream_task: finishing for client_idx=%d, res=%d", client_idx, res);
-    free(local_buf);
     httpd_resp_send_chunk(req, NULL, 0);
     httpd_req_async_handler_complete(req);
     free(resp_arg);
@@ -1078,8 +1066,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
     if (xSemaphoreTake(s_buf_mutex, portMAX_DELAY) == pdTRUE) {
         for (int i = 0; i < MAX_STREAM_CLIENTS; i++) {
             if (!s_clients[i].active) {
-                s_clients[i].frame_ready = xSemaphoreCreateBinary();
-                if (s_clients[i].frame_ready != NULL) {
+                // 128KB ring buffer in SPIRAM to hold up to 10-15 frames (about 0.5s of buffer)
+                s_clients[i].rb = xRingbufferCreateWithCaps(128 * 1024, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM);
+                if (s_clients[i].rb != NULL) {
                     s_clients[i].active = true;
                     client_idx = i;
                 }
@@ -1107,9 +1096,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
         ESP_LOGE(TAG, "Failed to start async handler: %s", esp_err_to_name(err));
         if (xSemaphoreTake(s_buf_mutex, portMAX_DELAY) == pdTRUE) {
             s_clients[client_idx].active = false;
-            if (s_clients[client_idx].frame_ready) {
-                vSemaphoreDelete(s_clients[client_idx].frame_ready);
-                s_clients[client_idx].frame_ready = NULL;
+            if (s_clients[client_idx].rb) {
+                vRingbufferDelete(s_clients[client_idx].rb);
+                s_clients[client_idx].rb = NULL;
             }
             xSemaphoreGive(s_buf_mutex);
         }
@@ -1122,9 +1111,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
         httpd_req_async_handler_complete(async_req);
         if (xSemaphoreTake(s_buf_mutex, portMAX_DELAY) == pdTRUE) {
             s_clients[client_idx].active = false;
-            if (s_clients[client_idx].frame_ready) {
-                vSemaphoreDelete(s_clients[client_idx].frame_ready);
-                s_clients[client_idx].frame_ready = NULL;
+            if (s_clients[client_idx].rb) {
+                vRingbufferDelete(s_clients[client_idx].rb);
+                s_clients[client_idx].rb = NULL;
             }
             xSemaphoreGive(s_buf_mutex);
         }
@@ -1141,9 +1130,9 @@ static esp_err_t stream_handler(httpd_req_t *req)
         httpd_req_async_handler_complete(async_req);
         if (xSemaphoreTake(s_buf_mutex, portMAX_DELAY) == pdTRUE) {
             s_clients[client_idx].active = false;
-            if (s_clients[client_idx].frame_ready) {
-                vSemaphoreDelete(s_clients[client_idx].frame_ready);
-                s_clients[client_idx].frame_ready = NULL;
+            if (s_clients[client_idx].rb) {
+                vRingbufferDelete(s_clients[client_idx].rb);
+                s_clients[client_idx].rb = NULL;
             }
             xSemaphoreGive(s_buf_mutex);
         }
@@ -1159,12 +1148,6 @@ static esp_err_t stream_handler(httpd_req_t *req)
 esp_err_t video_server_init(size_t buf_size)
 {
     s_buf_capacity = buf_size;
-
-    s_shared_buf = (uint8_t *)heap_caps_aligned_calloc(64, 1, buf_size, MALLOC_CAP_SPIRAM);
-    if (!s_shared_buf) {
-        ESP_LOGE(TAG, "Failed to alloc shared video buffer");
-        return ESP_ERR_NO_MEM;
-    }
 
     s_buf_mutex = xSemaphoreCreateMutex();
     if (!s_buf_mutex) {
@@ -1243,23 +1226,22 @@ esp_err_t video_server_init(size_t buf_size)
 
 void video_server_push_frame(const uint8_t *data, size_t size)
 {
-    if (!s_buf_mutex || !s_shared_buf) {
+    if (!s_buf_mutex) {
         return;
     }
     if (size > s_buf_capacity) {
         return;
     }
     if (xSemaphoreTake(s_buf_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        memcpy(s_shared_buf, data, size);
-        s_shared_size = size;
-
-        // Signal all active clients
         for (int i = 0; i < MAX_STREAM_CLIENTS; i++) {
-            if (s_clients[i].active && s_clients[i].frame_ready) {
-                xSemaphoreGive(s_clients[i].frame_ready);
+            if (s_clients[i].active && s_clients[i].rb) {
+                // Write the frame. If the ring buffer is full (slow connection), 
+                // wait up to 40ms (1 frame duration) for space before dropping.
+                // This blocks the frame processing task slightly, which naturally paces
+                // the frame rate to what the client can download, keeping H.264 GOP intact.
+                xRingbufferSend(s_clients[i].rb, (void *)data, size, pdMS_TO_TICKS(40));
             }
         }
-
         xSemaphoreGive(s_buf_mutex);
     }
 }

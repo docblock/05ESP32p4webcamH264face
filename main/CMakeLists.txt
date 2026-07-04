@@ -5,7 +5,7 @@ idf_component_register(SRCS "main.c"
                              "mjpeg_server.c"
                              "face_detect_task.cpp"
                        INCLUDE_DIRS "."
-                       REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c sensor_init esp_h264 esp_wifi nvs_flash esp_http_server esp_driver_ppa esp_timer esp_new_jpeg human_face_detect
+                       REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c sensor_init esp_h264 esp_wifi nvs_flash esp_http_server esp_driver_ppa esp_timer esp_new_jpeg human_face_detect esp_ringbuf
                        )
 
 # Force model binary data into the final binary.
