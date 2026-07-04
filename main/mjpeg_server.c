@@ -721,13 +721,13 @@ static const char STREAM_PAGE_HTML[] =
 // ---------------------------------------------------------------------------
 static void sse_sender_task(void *arg)
 {
-    char cur_gesture[32] = "";
+    char cur_gesture[64] = "";
     char event_buf[256];
 
     while (true) {
         vTaskDelay(pdMS_TO_TICKS(100));
 
-        char  name[32];
+        char  name[64];
         float score;
         int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
         face_detect_task_get_result(name, sizeof(name), &score, &x1, &y1, &x2, &y2);
@@ -789,7 +789,7 @@ static esp_err_t sse_handler(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "X-Accel-Buffering", "no");
 
-    char  init_name[32];
+    char  init_name[64];
     float init_score;
     int init_x1 = 0, init_y1 = 0, init_x2 = 0, init_y2 = 0;
     face_detect_task_get_result(init_name, sizeof(init_name), &init_score, &init_x1, &init_y1, &init_x2, &init_y2);
@@ -822,7 +822,7 @@ static esp_err_t sse_handler(httpd_req_t *req)
 
 static esp_err_t gesture_handler(httpd_req_t *req)
 {
-    char  name[32] = "no_face";
+    char  name[64] = "no_face";
     float score    = 0.0f;
     int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
     face_detect_task_get_result(name, sizeof(name), &score, &x1, &y1, &x2, &y2);
